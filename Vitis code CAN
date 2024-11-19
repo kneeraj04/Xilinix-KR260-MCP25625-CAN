@@ -1,0 +1,177 @@
+#include <stdio.h>
+#include <string.h>
+#include "platform.h"
+#include "xparameters.h"
+#include "xspips.h" // SPI driver
+
+#define SPI_EMIO XPAR_XSPIPS_0_DEVICE_ID
+
+// MCP25625 Instruction Set
+#define INSTRUCTION_WRITE  0x02
+#define INSTRUCTION_READ   0x03
+#define INSTRUCTION_MODIFY 0x05
+#define INSTRUCTION_RESET  0xC0
+#define INSTRUCTION_RTS    0x81
+#define READ_STATUS        0xA0
+
+// MCP25625 Registers
+#define MCP_CANCTRL  0x0F
+#define CNF1         0x2A
+#define CNF2         0x29
+#define CNF3         0x28
+#define CANINTE      0x2B
+#define CANINTF      0x2C
+#define RXB0CTRL     0x60
+#define TXB0CTRL     0x30
+#define RXB0DLC      0x65
+#define RXB0DATA     0x66
+#define TXB0DLC      0x35
+#define TXB0DATA     0x36
+
+// Configuration Values
+#define CNF1_CONFIG 0x41 // Baud Rate Prescaler = 4
+#define CNF2_CONFIG 0xFB // Prop Seg = 7, Phase Seg1 = 6
+#define CNF3_CONFIG 0x86 // Phase Seg2 = 6
+#define NORMAL_MODE 0x00
+#define CONFIG_MODE 0x80
+
+XSpiPs SpiInstance;
+
+// Function Prototypes
+void MCP_Reset();
+void MCP_ModifyReg(uint8_t address, uint8_t mask, uint8_t value);
+void MCP_WriteReg(uint8_t address, uint8_t value);
+uint8_t MCP_ReadReg(uint8_t address);
+void Configure_CAN();
+void Set_CAN_NormalMode();
+void Transmit_CAN_Message(uint8_t *data, uint8_t length);
+int Receive_CAN_Message(uint8_t *data, uint8_t *length);
+
+int main() {
+    XSpiPs_Config *SpiConfig_EMIO;
+    int status;
+
+    init_platform();
+
+    // SPI Initialization
+    SpiConfig_EMIO = XSpiPs_LookupConfig((u16)SPI_EMIO);
+    if (!SpiConfig_EMIO) {
+        printf("SPI LookupConfig failed\n\r");
+        return XST_FAILURE;
+    }
+    status = XSpiPs_CfgInitialize(&SpiInstance, SpiConfig_EMIO, SpiConfig_EMIO->BaseAddress);
+    if (status != XST_SUCCESS) {
+        printf("SPI CfgInitialize failed\n\r");
+        return XST_FAILURE;
+    }
+    XSpiPs_SetOptions(&SpiInstance, XSPIPS_MASTER_OPTION | XSPIPS_FORCE_SSELECT_OPTION);
+    XSpiPs_SetClkPrescaler(&SpiInstance, XSPIPS_CLK_PRESCALE_256);
+    XSpiPs_SetSlaveSelect(&SpiInstance, 0);
+
+    // Reset and Configure CAN
+    MCP_Reset();
+    Configure_CAN();
+    Set_CAN_NormalMode();
+
+    // Example: Continuous Monitoring for Messages
+    uint8_t tx_data[8] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88};
+    uint8_t rx_data[8];
+    uint8_t rx_length = 0;
+
+    printf("Starting CAN Monitoring...\n");
+
+    while (1) {
+        // Transmit a CAN message periodically (example data)
+        Transmit_CAN_Message(tx_data, 8);
+
+        // Check for incoming messages
+        if (Receive_CAN_Message(rx_data, &rx_length)) {
+            printf("Received Data: ");
+            for (int i = 0; i < rx_length; i++) {
+                printf("%02X ", rx_data[i]);
+            }
+            printf("\n");
+        }
+
+        // Add a small delay or polling frequency control (if needed)
+        usleep(100000); // 100 ms delay for demo purposes
+    }
+
+    cleanup_platform();
+    return 0;
+}
+
+// Reset MCP25625
+void MCP_Reset() {
+    uint8_t cmd = INSTRUCTION_RESET;
+    XSpiPs_PolledTransfer(&SpiInstance, &cmd, NULL, 1);
+}
+
+// Modify Register
+void MCP_ModifyReg(uint8_t address, uint8_t mask, uint8_t value) {
+    uint8_t cmd[4];
+    memset(cmd, 0, sizeof(cmd));
+    cmd[0] = INSTRUCTION_MODIFY;
+    cmd[1] = address;
+    cmd[2] = mask;
+    cmd[3] = value;
+    XSpiPs_PolledTransfer(&SpiInstance, cmd, NULL, 4);
+}
+
+// Write Register
+void MCP_WriteReg(uint8_t address, uint8_t value) {
+    uint8_t cmd[3];
+    memset(cmd, 0, sizeof(cmd));
+    cmd[0] = INSTRUCTION_WRITE;
+    cmd[1] = address;
+    cmd[2] = value;
+    XSpiPs_PolledTransfer(&SpiInstance, cmd, NULL, 3);
+}
+
+// Read Register
+uint8_t MCP_ReadReg(uint8_t address) {
+    uint8_t cmd[3], rx_buf[3];
+    memset(cmd, 0, sizeof(cmd));
+    memset(rx_buf, 0, sizeof(rx_buf));
+    cmd[0] = INSTRUCTION_READ;
+    cmd[1] = address;
+    XSpiPs_PolledTransfer(&SpiInstance, cmd, rx_buf, 3);
+    return rx_buf[2];
+}
+
+// Configure CAN Bit Timing
+void Configure_CAN() {
+    MCP_WriteReg(CNF1, CNF1_CONFIG);
+    MCP_WriteReg(CNF2, CNF2_CONFIG);
+    MCP_WriteReg(CNF3, CNF3_CONFIG);
+    MCP_WriteReg(CANINTE, 0xFF); // Enable all interrupts
+}
+
+// Set CAN to Normal Mode
+void Set_CAN_NormalMode() {
+    MCP_ModifyReg(MCP_CANCTRL, 0xE0, NORMAL_MODE);
+}
+
+// Transmit CAN Message
+void Transmit_CAN_Message(uint8_t *data, uint8_t length) {
+    MCP_WriteReg(TXB0DLC, length);
+    for (uint8_t i = 0; i < length; i++) {
+        MCP_WriteReg(TXB0DATA + i, data[i]);
+    }
+    uint8_t rts_cmd = INSTRUCTION_RTS;
+    XSpiPs_PolledTransfer(&SpiInstance, &rts_cmd, NULL, 1);
+}
+
+// Receive CAN Message
+int Receive_CAN_Message(uint8_t *data, uint8_t *length) {
+    uint8_t status = MCP_ReadReg(CANINTF);
+    if (status & 0x01) { // RX0IF flag set
+        *length = MCP_ReadReg(RXB0DLC) & 0x0F;
+        for (uint8_t i = 0; i < *length; i++) {
+            data[i] = MCP_ReadReg(RXB0DATA + i);
+        }
+        MCP_WriteReg(CANINTF, 0x01); // Clear RX0IF flag
+        return 1; // Message received
+    }
+    return 0; // No message
+}
