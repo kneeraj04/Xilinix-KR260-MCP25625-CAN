@@ -1,0 +1,152 @@
+#include "xspi.h"
+#include "xparameters.h"
+#include "sleep.h"
+
+// SPI Instance
+XSpi SpiInstance;
+
+// MCP25625 Register Addresses
+#define MCP_CANCTRL   0x0F
+#define CNF1          0x2A
+#define CNF2          0x29
+#define CNF3          0x28
+#define RXB0CTRL      0x60
+#define CANINTF       0x2C
+#define RXB0DLC       0x65
+#define TXB0CTRL      0x30
+#define TXB0DLC       0x36
+#define TXB0SIDH      0x31
+
+// SPI Commands
+#define WRITE_CMD     0x02
+#define READ_CMD      0x03
+#define MODIFY_CMD    0x05
+#define READ_STATUS   0xA0
+#define RESET_CMD     0xC0
+#define RTS_CMD_TXB0  0x81
+
+// Function Prototypes
+void MCP25625_WriteRegister(uint8_t reg_addr, uint8_t value);
+uint8_t MCP25625_ReadRegister(uint8_t reg_addr);
+void MCP25625_ModifyRegister(uint8_t reg_addr, uint8_t mask, uint8_t value);
+void MCP25625_Reset();
+void Configure_CAN_BitTiming();
+void Setup_CAN_Filters();
+void Set_CAN_Mode(uint8_t mode);
+void Transmit_CAN_Message(uint8_t *data, uint8_t length);
+uint8_t Receive_CAN_Message(uint8_t *buffer);
+
+int main() {
+    // Initialize the SPI interface
+    XSpi_Config *SpiConfig;
+    SpiConfig = XSpi_LookupConfig(XPAR_SPI_0_DEVICE_ID);
+    XSpi_CfgInitialize(&SpiInstance, SpiConfig, SpiConfig->BaseAddress);
+    XSpi_SetOptions(&SpiInstance, XSP_MASTER_OPTION | XSP_MANUAL_SSELECT_OPTION);
+    XSpi_Start(&SpiInstance);
+    XSpi_IntrGlobalDisable(&SpiInstance);
+
+    // Reset MCP25625
+    MCP25625_Reset();
+
+    // Set MCP25625 to Configuration Mode
+    Set_CAN_Mode(0x80);
+
+    // Configure CAN Bit Timing for 250 kbps
+    Configure_CAN_BitTiming();
+
+    // Setup Filters and Clear Buffers
+    Setup_CAN_Filters();
+
+    // Set MCP25625 to Normal Mode
+    Set_CAN_Mode(0x00);
+
+    // Transmit and Receive Example
+    uint8_t tx_data[] = {0x11, 0x22, 0x33, 0x44}; // Example message
+    uint8_t rx_buffer[8];
+
+    while (1) {
+        // Transmit CAN Message
+        Transmit_CAN_Message(tx_data, sizeof(tx_data));
+
+        // Receive CAN Message
+        if (Receive_CAN_Message(rx_buffer)) {
+            xil_printf("Received Message: ");
+            for (int i = 0; i < 8; i++) {
+                xil_printf("%02X ", rx_buffer[i]);
+            }
+            xil_printf("\n");
+        }
+
+        sleep(1); // Delay for demonstration
+    }
+
+    return 0;
+}
+
+// Function Definitions
+
+void MCP25625_Reset() {
+    uint8_t reset_cmd = RESET_CMD;
+    XSpi_Transfer(&SpiInstance, &reset_cmd, NULL, 1);
+    usleep(1000); // Wait for reset
+}
+
+void MCP25625_WriteRegister(uint8_t reg_addr, uint8_t value) {
+    uint8_t buffer[3] = {WRITE_CMD, reg_addr, value};
+    XSpi_Transfer(&SpiInstance, buffer, NULL, 3);
+}
+
+uint8_t MCP25625_ReadRegister(uint8_t reg_addr) {
+    uint8_t buffer[3] = {READ_CMD, reg_addr, 0x00};
+    uint8_t rx_buffer[3];
+    XSpi_Transfer(&SpiInstance, buffer, rx_buffer, 3);
+    return rx_buffer[2];
+}
+
+void MCP25625_ModifyRegister(uint8_t reg_addr, uint8_t mask, uint8_t value) {
+    uint8_t buffer[4] = {MODIFY_CMD, reg_addr, mask, value};
+    XSpi_Transfer(&SpiInstance, buffer, NULL, 4);
+}
+
+void Configure_CAN_BitTiming() {
+    MCP25625_WriteRegister(CNF1, 0x41); // Set CNF1 for 250 kbps
+    MCP25625_WriteRegister(CNF2, 0xFB); // Set CNF2
+    MCP25625_WriteRegister(CNF3, 0x86); // Set CNF3
+}
+
+void Setup_CAN_Filters() {
+    for (uint8_t addr = 0x00; addr <= 0x5D; addr++) {
+        MCP25625_WriteRegister(addr, 0x00); // Clear all filters and buffers
+    }
+    MCP25625_ModifyRegister(RXB0CTRL, 0x64, 0x60); // Accept any message type
+}
+
+void Set_CAN_Mode(uint8_t mode) {
+    MCP25625_ModifyRegister(MCP_CANCTRL, 0x80, mode);
+}
+
+void Transmit_CAN_Message(uint8_t *data, uint8_t length) {
+    MCP25625_WriteRegister(TXB0SIDH, 0x00); // Set standard ID high byte
+    MCP25625_WriteRegister(TXB0CTRL, 0x00); // Set TX control to standard ID
+
+    // Load data
+    for (uint8_t i = 0; i < length; i++) {
+        MCP25625_WriteRegister(TXB0DLC + i, data[i]);
+    }
+
+    MCP25625_WriteRegister(TXB0DLC, length); // Set data length code
+    uint8_t rts_cmd = RTS_CMD_TXB0;
+    XSpi_Transfer(&SpiInstance, &rts_cmd, NULL, 1); // Request to Send
+}
+
+uint8_t Receive_CAN_Message(uint8_t *buffer) {
+    uint8_t status = MCP25625_ReadRegister(CANINTF);
+    if (status & 0x01) { // RX0IF is set
+        for (uint8_t i = 0; i < 8; i++) {
+            buffer[i] = MCP25625_ReadRegister(RXB0DLC + i);
+        }
+        MCP25625_WriteRegister(CANINTF, 0x01); // Clear RX0IF
+        return 1;
+    }
+    return 0; // No message
+}
