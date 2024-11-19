@@ -1,9 +1,10 @@
-#include "xspi.h"
+#include "xspi_ps.h"
 #include "xparameters.h"
 #include "sleep.h"
+#include "string.h"  // For memset
 
 // SPI Instance
-XSpi SpiInstance;
+XSpiPs SpiInstance;
 
 // MCP25625 Register Addresses
 #define MCP_CANCTRL   0x0F
@@ -38,13 +39,12 @@ uint8_t Receive_CAN_Message(uint8_t *buffer);
 
 int main() {
     // Initialize the SPI interface
-    XSpi_Config *SpiConfig;
-    SpiConfig = XSpi_LookupConfig(XPAR_SPI_0_DEVICE_ID);
-    XSpi_CfgInitialize(&SpiInstance, SpiConfig, SpiConfig->BaseAddress);
-    XSpi_SetOptions(&SpiInstance, XSP_MASTER_OPTION | XSP_MANUAL_SSELECT_OPTION);
-    XSpi_Start(&SpiInstance);
-    XSpi_IntrGlobalDisable(&SpiInstance);
-
+    XSpiPs_Config *SpiConfig;
+    SpiConfig = XSpiPs_LookupConfig(XPAR_XSPIPS_0_DEVICE_ID);
+    XSpiPs_CfgInitialize(&SpiInstance, SpiConfig, SpiConfig->BaseAddress);
+    XSpiPs_SetOptions(&SpiInstance, XSPIPS_FORCE_SSELECT_OPTION | XSPIPS_MASTER_OPTION);
+    XSpiPs_SetClkPrescaler(&SpiInstance, XSPIPS_CLK_PRESCALE_64);
+    
     // Reset MCP25625
     MCP25625_Reset();
 
@@ -87,25 +87,38 @@ int main() {
 
 void MCP25625_Reset() {
     uint8_t reset_cmd = RESET_CMD;
-    XSpi_Transfer(&SpiInstance, &reset_cmd, NULL, 1);
-    usleep(1000); // Wait for reset
+    XSpiPs_PolledTransfer(&SpiInstance, &reset_cmd, NULL, 1);
+    usleep(1000); // Wait for reset (using microsecond delay)
 }
 
 void MCP25625_WriteRegister(uint8_t reg_addr, uint8_t value) {
-    uint8_t buffer[3] = {WRITE_CMD, reg_addr, value};
-    XSpi_Transfer(&SpiInstance, buffer, NULL, 3);
+    uint8_t buffer[3];
+    memset(buffer, 0, sizeof(buffer));  // Initialize buffer to 0
+    buffer[0] = WRITE_CMD;
+    buffer[1] = reg_addr;
+    buffer[2] = value;
+    XSpiPs_PolledTransfer(&SpiInstance, buffer, NULL, 3);
 }
 
 uint8_t MCP25625_ReadRegister(uint8_t reg_addr) {
-    uint8_t buffer[3] = {READ_CMD, reg_addr, 0x00};
+    uint8_t buffer[3];
     uint8_t rx_buffer[3];
-    XSpi_Transfer(&SpiInstance, buffer, rx_buffer, 3);
+    memset(buffer, 0, sizeof(buffer));  // Initialize buffer to 0
+    memset(rx_buffer, 0, sizeof(rx_buffer));  // Initialize response buffer to 0
+    buffer[0] = READ_CMD;
+    buffer[1] = reg_addr;
+    XSpiPs_PolledTransfer(&SpiInstance, buffer, rx_buffer, 3);
     return rx_buffer[2];
 }
 
 void MCP25625_ModifyRegister(uint8_t reg_addr, uint8_t mask, uint8_t value) {
-    uint8_t buffer[4] = {MODIFY_CMD, reg_addr, mask, value};
-    XSpi_Transfer(&SpiInstance, buffer, NULL, 4);
+    uint8_t buffer[4];
+    memset(buffer, 0, sizeof(buffer));  // Initialize buffer to 0
+    buffer[0] = MODIFY_CMD;
+    buffer[1] = reg_addr;
+    buffer[2] = mask;
+    buffer[3] = value;
+    XSpiPs_PolledTransfer(&SpiInstance, buffer, NULL, 4);
 }
 
 void Configure_CAN_BitTiming() {
@@ -136,7 +149,7 @@ void Transmit_CAN_Message(uint8_t *data, uint8_t length) {
 
     MCP25625_WriteRegister(TXB0DLC, length); // Set data length code
     uint8_t rts_cmd = RTS_CMD_TXB0;
-    XSpi_Transfer(&SpiInstance, &rts_cmd, NULL, 1); // Request to Send
+    XSpiPs_PolledTransfer(&SpiInstance, &rts_cmd, NULL, 1); // Request to Send
 }
 
 uint8_t Receive_CAN_Message(uint8_t *buffer) {
