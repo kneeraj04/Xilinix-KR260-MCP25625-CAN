@@ -1,165 +1,262 @@
-#include "xspi_ps.h"
-#include "xparameters.h"
-#include "sleep.h"
-#include "string.h"  // For memset
+#include "xspips.h" 
 
-// SPI Instance
-XSpiPs SpiInstance;
+#include "xparameters.h" 
 
-// MCP25625 Register Addresses
-#define MCP_CANCTRL   0x0F
-#define CNF1          0x2A
-#define CNF2          0x29
-#define CNF3          0x28
-#define RXB0CTRL      0x60
-#define CANINTF       0x2C
-#define RXB0DLC       0x65
-#define TXB0CTRL      0x30
-#define TXB0DLC       0x36
-#define TXB0SIDH      0x31
+#include "sleep.h" 
 
-// SPI Commands
-#define WRITE_CMD     0x02
-#define READ_CMD      0x03
-#define MODIFY_CMD    0x05
-#define READ_STATUS   0xA0
-#define RESET_CMD     0xC0
-#define RTS_CMD_TXB0  0x81
+#include "string.h"  // For memset 
 
-// Function Prototypes
-void MCP25625_WriteRegister(uint8_t reg_addr, uint8_t value);
-uint8_t MCP25625_ReadRegister(uint8_t reg_addr);
-void MCP25625_ModifyRegister(uint8_t reg_addr, uint8_t mask, uint8_t value);
-void MCP25625_Reset();
-void Configure_CAN_BitTiming();
-void Setup_CAN_Filters();
-void Set_CAN_Mode(uint8_t mode);
-void Transmit_CAN_Message(uint8_t *data, uint8_t length);
-uint8_t Receive_CAN_Message(uint8_t *buffer);
+#include "platform.h"  
 
-int main() {
-    // Initialize the SPI interface
-    XSpiPs_Config *SpiConfig;
-    SpiConfig = XSpiPs_LookupConfig(XPAR_XSPIPS_0_DEVICE_ID);
-    XSpiPs_CfgInitialize(&SpiInstance, SpiConfig, SpiConfig->BaseAddress);
-    XSpiPs_SetOptions(&SpiInstance, XSPIPS_FORCE_SSELECT_OPTION | XSPIPS_MASTER_OPTION);
-    XSpiPs_SetClkPrescaler(&SpiInstance, XSPIPS_CLK_PRESCALE_64);
-    
-    // Reset MCP25625
-    MCP25625_Reset();
+// SPI Commands  --verified 
 
-    // Set MCP25625 to Configuration Mode
-    Set_CAN_Mode(0x80);
+#define WRITE_CMD     0x02 
 
-    // Configure CAN Bit Timing for 250 kbps
-    Configure_CAN_BitTiming();
+#define READ_CMD      0x03 
 
-    // Setup Filters and Clear Buffers
-    Setup_CAN_Filters();
+#define MODIFY_CMD    0x05 
 
-    // Set MCP25625 to Normal Mode
-    Set_CAN_Mode(0x00);
+#define READ_STATUS   0xA0 
 
-    // Transmit and Receive Example
-    uint8_t tx_data[] = {0x11, 0x22, 0x33, 0x44}; // Example message
-    uint8_t rx_buffer[8];
+#define RESET_CMD     0xC0 
+
+#define RTS_CMD_TXB0  0x81 
+
+  
+
+// MCP25625 Register Addresses  --verified 
+#define CANCTRL   0x0F 
+
+#define CNF1          0x2A 
+
+#define CNF2          0x29 
+
+#define CNF3          0x28 
+
+  
+
+#define RXB0CTRL      0x60 
+
+#define CANINTE       0x2B 
+
+#define CANINTF       0x2C 
+
+  
+
+#define RXB0DLC       0x65 
+
+#define TXB0CTRL      0x30 
+
+#define TXB0DLC       0x35 
+
+#define TXB0SIDH      0x31 
+
+// Function Prototypes  --verified block diagram 
+int MCP_Reset(); 
+
+void Configure_CAN_BitTiming(); 
+
+void Setup_CAN_Filters(); 
+
+int Set_CAN_Mode(uint8_t mode); 
+
+int Transmit_CAN_Message(uint8_t *data, uint8_t length); 
+
+uint8_t Receive_CAN_Message(uint8_t *buffer); 
+
+int MCP_WriteRegister(uint8_t reg_addr, uint8_t value);   
+
+uint8_t MCP_ReadRegister(uint8_t reg_addr); 
+
+int MCP_ModifyRegister(uint8_t reg_addr, uint8_t mask, uint8_t value); 
+
+// SPI Instance 
+
+XSpiPs SpiInstance; 
+
+int main() { 
+
+    // Initialize the SPI interface 
+
+init_platform(); 
+
+    XSpiPs_Config *SpiConfig; 
+
+    SpiConfig = XSpiPs_LookupConfig(XPAR_XSPIPS_0_DEVICE_ID); 
+
+    XSpiPs_CfgInitialize(&SpiInstance, SpiConfig, SpiConfig->BaseAddress); 
+
+    XSpiPs_SetOptions(&SpiInstance, XSPIPS_MASTER_OPTION | XSPIPS_FORCE_SSELECT_OPTION ); 
+
+    XSpiPs_SetClkPrescaler(&SpiInstance, XSPIPS_CLK_PRESCALE_256); 
+
+    XSpiPs_SetSlaveSelect(&SpiInstance, 0); 
+
+    // Reset MCP25625 
+
+    MCP_Reset();  //verified 
+
+    // Set MCP25625 to Configuration Mode 
+
+    Set_CAN_Mode(0x80); //verified 
+
+    // Configure CAN Bit Timing for 250 kbps 
+    Configure_CAN_BitTiming(); 
+
+    // Setup Filters and Clear Buffers 
+
+    Setup_CAN_Filters(); 
+
+    // Set MCP25625 to Normal Mode 
+
+    Set_CAN_Mode(0x00); 
+
+    // Transmit and Receive Example 
+
+    uint8_t tx_data[] = {0x11, 0x22, 0x33, 0x44}; // Example message 
+
+    uint8_t rx_buffer[8]; 
 
     while (1) {
-        // Transmit CAN Message
-        Transmit_CAN_Message(tx_data, sizeof(tx_data));
 
-        // Receive CAN Message
-        if (Receive_CAN_Message(rx_buffer)) {
-            xil_printf("Received Message: ");
-            for (int i = 0; i < 8; i++) {
-                xil_printf("%02X ", rx_buffer[i]);
-            }
-            xil_printf("\n");
-        }
+        // Transmit CAN Message 
+        Transmit_CAN_Message(tx_data, sizeof(tx_data)); 
 
-        sleep(1); // Delay for demonstration
-    }
+        // Receive CAN Message 
+        if (Receive_CAN_Message(rx_buffer)) { 
 
-    return 0;
-}
+            xil_printf("Received Message: "); 
+            for (int i = 0; i < 8; i++) { 
+                xil_printf("%02X ", rx_buffer[i]); 
 
-// Function Definitions
+            } 
+            xil_printf("\n"); 
 
-void MCP25625_Reset() {
-    uint8_t reset_cmd = RESET_CMD;
-    XSpiPs_PolledTransfer(&SpiInstance, &reset_cmd, NULL, 1);
-    usleep(1000); // Wait for reset (using microsecond delay)
-}
+        } 
+        for (volatile int delay = 0; delay < 10000000; delay++); // Basic delay loop 
 
-void MCP25625_WriteRegister(uint8_t reg_addr, uint8_t value) {
-    uint8_t buffer[3];
-    memset(buffer, 0, sizeof(buffer));  // Initialize buffer to 0
-    buffer[0] = WRITE_CMD;
-    buffer[1] = reg_addr;
-    buffer[2] = value;
-    XSpiPs_PolledTransfer(&SpiInstance, buffer, NULL, 3);
-}
+    } 
+    return 0; 
+} 
 
-uint8_t MCP25625_ReadRegister(uint8_t reg_addr) {
-    uint8_t buffer[3];
+// Functions defined 
+
+int MCP_Reset() {	//verified 
+
+    uint8_t reset_cmd;  
+
+    memset(&reset_cmd, 0, sizeof(reset_cmd)); 
+
+    reset_cmd = RESET_CMD; 
+
+    return XSpiPs_PolledTransfer(&SpiInstance, &reset_cmd, NULL, 1); 
+
+    for (int delay = 0; delay < 10000000; delay++); // Basic delay 
+
+} 
+
+int MCP_WriteRegister(uint8_t reg_addr, uint8_t value) {  //verified 
+
+    uint8_t buffer[3]; 
+
+    memset(buffer, 0, sizeof(buffer));  // Initialize buffer to 0 
+
+    buffer[0] = WRITE_CMD; 
+
+    buffer[1] = reg_addr; 
+
+    buffer[2] = value; 
+
+    return XSpiPs_PolledTransfer(&SpiInstance, buffer, NULL, 3); 
+
+} 
+uint8_t MCP_ReadRegister(uint8_t reg_addr) { 
+
+    uint8_t buffer[3]; 
     uint8_t rx_buffer[3];
-    memset(buffer, 0, sizeof(buffer));  // Initialize buffer to 0
-    memset(rx_buffer, 0, sizeof(rx_buffer));  // Initialize response buffer to 0
-    buffer[0] = READ_CMD;
-    buffer[1] = reg_addr;
-    XSpiPs_PolledTransfer(&SpiInstance, buffer, rx_buffer, 3);
-    return rx_buffer[2];
-}
+    memset(buffer, 0, sizeof(buffer));  // Initialize buffer to 0 
+    memset(rx_buffer, 0, sizeof(rx_buffer));  // Initialize response buffer to 0 
+    buffer[0] = READ_CMD; 
+    buffer[1] = reg_addr; 
+    XSpiPs_PolledTransfer(&SpiInstance, buffer, rx_buffer, 3); 
+    return rx_buffer[2];   
 
-void MCP25625_ModifyRegister(uint8_t reg_addr, uint8_t mask, uint8_t value) {
-    uint8_t buffer[4];
-    memset(buffer, 0, sizeof(buffer));  // Initialize buffer to 0
-    buffer[0] = MODIFY_CMD;
-    buffer[1] = reg_addr;
-    buffer[2] = mask;
-    buffer[3] = value;
-    XSpiPs_PolledTransfer(&SpiInstance, buffer, NULL, 4);
-}
+} 
+  
 
-void Configure_CAN_BitTiming() {
-    MCP25625_WriteRegister(CNF1, 0x41); // Set CNF1 for 250 kbps
-    MCP25625_WriteRegister(CNF2, 0xFB); // Set CNF2
-    MCP25625_WriteRegister(CNF3, 0x86); // Set CNF3
-}
+int MCP_ModifyRegister(uint8_t reg_addr, uint8_t mask, uint8_t value) { 
+    uint8_t buffer[4]; 
+    memset(buffer, 0, sizeof(buffer));  // Initialize buffer to 0 
 
-void Setup_CAN_Filters() {
-    for (uint8_t addr = 0x00; addr <= 0x5D; addr++) {
-        MCP25625_WriteRegister(addr, 0x00); // Clear all filters and buffers
-    }
-    MCP25625_ModifyRegister(RXB0CTRL, 0x64, 0x60); // Accept any message type
-}
+    buffer[0] = MODIFY_CMD; 
+    buffer[1] = reg_addr; 
+    buffer[2] = mask; 
+    buffer[3] = value; 
+    XSpiPs_PolledTransfer(&SpiInstance, buffer, NULL, 4);  
 
-void Set_CAN_Mode(uint8_t mode) {
-    MCP25625_ModifyRegister(MCP_CANCTRL, 0x80, mode);
-}
+} 
 
-void Transmit_CAN_Message(uint8_t *data, uint8_t length) {
-    MCP25625_WriteRegister(TXB0SIDH, 0x00); // Set standard ID high byte
-    MCP25625_WriteRegister(TXB0CTRL, 0x00); // Set TX control to standard ID
+void Configure_CAN_BitTiming() { //XSpiPs_PolledTransfer(&SpiInstance, &reset_cmd, NULL, 1);?? 
 
-    // Load data
-    for (uint8_t i = 0; i < length; i++) {
-        MCP25625_WriteRegister(TXB0DLC + i, data[i]);
-    }
+    MCP_WriteRegister(CNF1, 0x41); // Set CNF1 for 250 kbps 
+    MCP_WriteRegister(CNF2, 0xFB); // Set CNF2 
+    MCP_WriteRegister(CNF3, 0x86); // Set CNF3  
 
-    MCP25625_WriteRegister(TXB0DLC, length); // Set data length code
-    uint8_t rts_cmd = RTS_CMD_TXB0;
-    XSpiPs_PolledTransfer(&SpiInstance, &rts_cmd, NULL, 1); // Request to Send
-}
+}   
 
-uint8_t Receive_CAN_Message(uint8_t *buffer) {
-    uint8_t status = MCP25625_ReadRegister(CANINTF);
-    if (status & 0x01) { // RX0IF is set
-        for (uint8_t i = 0; i < 8; i++) {
-            buffer[i] = MCP25625_ReadRegister(RXB0DLC + i);
-        }
-        MCP25625_WriteRegister(CANINTF, 0x01); // Clear RX0IF
-        return 1;
-    }
-    return 0; // No message
-}
+void Setup_CAN_Filters() {  //XSpiPs_PolledTransfer(&SpiInstance, &reset_cmd, NULL, 1);?? 
+
+    for (uint8_t addr = 0x00; addr <= 0x5D; addr++) { 
+
+        MCP_WriteRegister(addr, 0x00); // Clear all filters and buffers 
+
+    } 
+
+    MCP_ModifyRegister(RXB0CTRL, 0x64, 0x60); // Accept any message type   
+
+} 
+
+
+int Set_CAN_Mode(uint8_t mode) { //XSpiPs_PolledTransfer(&SpiInstance, &reset_cmd, NULL, 1);??  
+
+return MCP_ModifyRegister(CANCTRL, 0x80, mode); 
+
+} 
+
+int Transmit_CAN_Message(uint8_t *data, uint8_t length) { 
+
+    MCP_WriteRegister(TXB0SIDH, 0x40); // Set standard ID high byte --doubtful 
+    MCP_WriteRegister(TXB0CTRL, 0x81); // Set TX control to standard ID  0x08 
+
+    // Load data 
+
+    for (uint8_t i = 0; i < length; i++) { 
+
+        MCP_WriteRegister(TXB0DLC + i, data[i]); 
+    } 
+
+    MCP_WriteRegister(TXB0DLC, length); // Set data length code 
+    uint8_t rts_cmd = RTS_CMD_TXB0; 
+
+    return XSpiPs_PolledTransfer(&SpiInstance, &rts_cmd, NULL, 1); // Request to Send 
+
+} 
+
+uint8_t Receive_CAN_Message(uint8_t *buffer) { 
+
+    uint8_t status = MCP_ReadRegister(CANINTF); 
+    if (status & 0x01) { // RX0IF is set 
+        for (uint8_t i = 0; i < 8; i++) { 
+
+            buffer[i] = MCP_ReadRegister(RXB0DLC + i); 
+
+        } 
+        MCP_WriteRegister(CANINTF, 0x01); // Clear RX0IF 
+        return 1; 
+
+    } 
+    return 0; // No message 
+
+} 
+
+ 
