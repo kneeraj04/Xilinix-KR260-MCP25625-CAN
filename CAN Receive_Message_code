@@ -438,7 +438,7 @@ uint8_t MCP_ReadRegister(uint8_t reg_addr) {
 
   
 
-    return rx_buffer[0]; // Read value is the first byte 
+    return rx_buffer[2]; // Read value is the Second byte 
 
   
 
