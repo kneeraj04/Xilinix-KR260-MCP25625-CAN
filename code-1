@@ -1,14 +1,30 @@
+ 
+
+#include <stdio.h> 
+
 #include "xspips.h" 
 
 #include "xparameters.h" 
 
-#include "sleep.h" 
-
 #include "string.h"  // For memset 
 
-#include "platform.h"  
+#include "platform.h" 
 
-// SPI Commands  --verified 
+#include "xgpiops.h" 
+
+  
+
+// SPI Commands 
+
+  
+
+#define GPIO_DEVICE_ID  XPAR_PSU_GPIO_0_DEVICE_ID 
+
+#define SPI_EMIO XPAR_XSPIPS_0_DEVICE_ID 
+
+#define PIN_D20_RESET 78 
+
+  
 
 #define WRITE_CMD     0x02 
 
@@ -16,16 +32,19 @@
 
 #define MODIFY_CMD    0x05 
 
-#define READ_STATUS   0xA0 
-
 #define RESET_CMD     0xC0 
 
 #define RTS_CMD_TXB0  0x81 
 
+//#define READ_STATUS   0xA0 
+
   
 
-// MCP25625 Register Addresses  --verified 
-#define CANCTRL   0x0F 
+// MCP25625 Register Addresses 
+
+  
+
+#define CANCTRL       0x0F 
 
 #define CNF1          0x2A 
 
@@ -35,131 +54,311 @@
 
   
 
-#define RXB0CTRL      0x60 
-
-#define CANINTE       0x2B 
-
-#define CANINTF       0x2C 
-
   
-
-#define RXB0DLC       0x65 
 
 #define TXB0CTRL      0x30 
 
 #define TXB0DLC       0x35 
 
-#define TXB0SIDH      0x31 
+#define TXB0D0        0x36 
 
-// Function Prototypes  --verified block diagram 
-int MCP_Reset(); 
+  
+
+#define CANINTE       0x2B 
+
+#define RXB0CTRL      0x60 
+
+#define CANINTF       0x2C 
+
+#define RXB0D0        0x66 
+
+#define RXB0D1        0x67 
+
+#define RXB0D2        0x68 
+
+#define RXB0D3        0x69 
+
+#define RXB0DLC       0x65 
+
+#define RXB0SIDH      0x61 
+
+#define RXB0SIDL      0x62 
+
+#define RXF0SIDH      0x00 
+
+#define RXF0SIDL      0x01 
+
+#define RXM0SIDH      0x20 
+
+#define RXM0SIDL      0x21 
+
+  
+
+// SPI-GPIO Instance 
+
+  
+
+XGpioPs GpioPs; 
+
+XSpiPs SpiInstance; 
+
+  
+
+// Function Prototypes 
+
+  
+
+uint8_t MCP_Reset(); 
 
 void Configure_CAN_BitTiming(); 
 
 void Setup_CAN_Filters(); 
 
-int Set_CAN_Mode(uint8_t mode); 
+void Set_CAN_Accept_Any_Message(uint8_t scam); 
 
-int Transmit_CAN_Message(uint8_t *data, uint8_t length); 
+void Set_CAN_Mode(uint8_t mode); 
 
-uint8_t Receive_CAN_Message(uint8_t *buffer); 
+uint8_t MCP_WriteRegister(uint8_t reg_addr, uint8_t value); 
 
-int MCP_WriteRegister(uint8_t reg_addr, uint8_t value);   
+uint8_t MCP_ModifyRegister(uint8_t reg_addr, uint8_t mask, uint8_t value); 
 
 uint8_t MCP_ReadRegister(uint8_t reg_addr); 
 
-int MCP_ModifyRegister(uint8_t reg_addr, uint8_t mask, uint8_t value); 
+uint8_t Receive_CAN_Message(uint16_t *can_id, uint8_t *length, uint8_t *data); 
 
-// SPI Instance 
+uint8_t Transmit_CAN_Message(uint8_t *data, uint8_t length); 
 
-XSpiPs SpiInstance; 
+//uint8_t Read_CAN_status(); 
+
+  
 
 int main() { 
 
-    // Initialize the SPI interface 
+  
 
-init_platform(); 
+  
 
     XSpiPs_Config *SpiConfig; 
 
-    SpiConfig = XSpiPs_LookupConfig(XPAR_XSPIPS_0_DEVICE_ID); 
+    XGpioPs_Config *ConfigPtr; 
+
+  
+
+    // Initialize the platform 
+
+    init_platform(); 
+
+  
+
+    // Initialize GPIO for Reset Pin 
+
+  
+
+    ConfigPtr = XGpioPs_LookupConfig(GPIO_DEVICE_ID); 
+
+    XGpioPs_CfgInitialize(&GpioPs, ConfigPtr, ConfigPtr->BaseAddr); 
+
+    XGpioPs_SetDirectionPin(&GpioPs, PIN_D20_RESET, 1); 
+
+  
+
+    // Initialize SPI Interface 
+
+  
+
+    SpiConfig = XSpiPs_LookupConfig((u16)SPI_EMIO); 
 
     XSpiPs_CfgInitialize(&SpiInstance, SpiConfig, SpiConfig->BaseAddress); 
 
-    XSpiPs_SetOptions(&SpiInstance, XSPIPS_MASTER_OPTION | XSPIPS_FORCE_SSELECT_OPTION ); 
+    XSpiPs_SelfTest(&SpiInstance); 
+
+    XSpiPs_SetOptions(&SpiInstance, XSPIPS_MASTER_OPTION | XSPIPS_FORCE_SSELECT_OPTION); 
 
     XSpiPs_SetClkPrescaler(&SpiInstance, XSPIPS_CLK_PRESCALE_256); 
 
+    XSpiPs_Enable(&SpiInstance); //Enabled all registers 
+
     XSpiPs_SetSlaveSelect(&SpiInstance, 0); 
+
+   //XSpiPs_InterruptHandler(&SpiInstance); 
+
+  
 
     // Reset MCP25625 
 
-    MCP_Reset();  //verified 
+  
 
-    // Set MCP25625 to Configuration Mode 
+    MCP_Reset(); 
 
-    Set_CAN_Mode(0x80); //verified 
+  
 
     // Configure CAN Bit Timing for 250 kbps 
+
+  
+
     Configure_CAN_BitTiming(); 
+
+  
 
     // Setup Filters and Clear Buffers 
 
+  
+
     Setup_CAN_Filters(); 
+
+  
+
+    // Set CAN to accept any message type 
+
+  
+
+    Set_CAN_Accept_Any_Message(0x60);// This will modify the filter settings 
+
+  
 
     // Set MCP25625 to Normal Mode 
 
+  
+
     Set_CAN_Mode(0x00); 
 
-    // Transmit and Receive Example 
+  
 
-    uint8_t tx_data[] = {0x11, 0x22, 0x33, 0x44}; // Example message 
+    uint8_t can_ctrl = MCP_ReadRegister(CANCTRL); 
 
-    uint8_t rx_buffer[8]; 
+  
 
-    while (1) {
+    //Read_CAN_status(); 
 
-        // Transmit CAN Message 
-        Transmit_CAN_Message(tx_data, sizeof(tx_data)); 
+  
 
-        // Receive CAN Message 
-        if (Receive_CAN_Message(rx_buffer)) { 
+    xil_printf("MCP25625 Initialized. Waiting for messages...\n"); 
 
-            xil_printf("Received Message: "); 
-            for (int i = 0; i < 8; i++) { 
-                xil_printf("%02X ", rx_buffer[i]); 
+  
 
-            } 
-            xil_printf("\n"); 
+    //Transmit message 
 
-        } 
-        for (volatile int delay = 0; delay < 10000000; delay++); // Basic delay loop 
+  
+
+    uint8_t tx_data[] = {0x44, 0x33, 0x22, 0x11}; // Example message 
+
+    // Receive Example CAN Message 
+
+  
+
+     uint16_t can_id = 0; 
+
+     uint8_t length = 0; 
+
+     uint8_t data[4] = {0}; 
+
+  
+
+   while (1) { 
+
+  
+
+	   	   Transmit_CAN_Message(tx_data, sizeof(tx_data)); 
+
+         // Poll for incoming message 
+
+  
+
+         if (Receive_CAN_Message(&can_id, &length, data)) { 
+
+  
+
+             // Print the CAN-ID 
+
+             xil_printf("CAN-ID: 0x%03X\n", can_id); 
+
+  
+
+             // Print the Data Length Code (DLC) 
+
+             xil_printf("Length: %d bytes\n", length); 
+
+  
+
+             // Print the Data Bytes 
+
+  
+
+             xil_printf("Data: "); 
+
+  
+
+             for (int i = 0; i < length; i++) { 
+
+                 xil_printf("0x%02X ", data[i]); 
+
+  
+
+             } 
+
+  
+
+             xil_printf("\n"); 
+
+  
+
+         } 
+
+  
+
+         for (int delay = 0; delay < 1000000; delay++); 
 
     } 
-    return 0; 
-} 
 
-// Functions defined 
+  
 
-int MCP_Reset() {	//verified 
+  
 
-    uint8_t reset_cmd;  
+   return 0; 
 
-    memset(&reset_cmd, 0, sizeof(reset_cmd)); 
-
-    reset_cmd = RESET_CMD; 
-
-    return XSpiPs_PolledTransfer(&SpiInstance, &reset_cmd, NULL, 1); 
-
-    for (int delay = 0; delay < 10000000; delay++); // Basic delay 
+  
 
 } 
 
-int MCP_WriteRegister(uint8_t reg_addr, uint8_t value) {  //verified 
+  
 
-    uint8_t buffer[3]; 
+// Function Definitions 
 
-    memset(buffer, 0, sizeof(buffer));  // Initialize buffer to 0 
+  
+
+uint8_t MCP_Reset() { 
+
+  
+
+    for (int delay = 0; delay < 100; delay++); 
+
+    XGpioPs_WritePin(&GpioPs, PIN_D20_RESET, 0); // Set Reset High 
+
+    xil_printf("Setting Reset LOW\n"); 
+
+    for (int delay = 0; delay < 100; delay++); 
+
+    XGpioPs_WritePin(&GpioPs, PIN_D20_RESET, 1); // Set Reset Low 
+
+    xil_printf("Setting Reset HIGH\n"); 
+
+    for (int delay = 0; delay < 100; delay++); 
+
+    return 1; 
+
+} 
+
+  
+
+uint8_t MCP_WriteRegister(uint8_t reg_addr, uint8_t value) { 
+
+  
+
+	uint8_t buffer[3]; 
+
+    memset(buffer, 0, sizeof(buffer)); // Initialize buffer to 0 
+
+  
 
     buffer[0] = WRITE_CMD; 
 
@@ -169,94 +368,401 @@ int MCP_WriteRegister(uint8_t reg_addr, uint8_t value) {  //verified
 
     return XSpiPs_PolledTransfer(&SpiInstance, buffer, NULL, 3); 
 
-} 
-uint8_t MCP_ReadRegister(uint8_t reg_addr) { 
-
-    uint8_t buffer[3]; 
-    uint8_t rx_buffer[3];
-    memset(buffer, 0, sizeof(buffer));  // Initialize buffer to 0 
-    memset(rx_buffer, 0, sizeof(rx_buffer));  // Initialize response buffer to 0 
-    buffer[0] = READ_CMD; 
-    buffer[1] = reg_addr; 
-    XSpiPs_PolledTransfer(&SpiInstance, buffer, rx_buffer, 3); 
-    return rx_buffer[2];   
-
-} 
   
 
-int MCP_ModifyRegister(uint8_t reg_addr, uint8_t mask, uint8_t value) { 
+} 
+
+  
+
+uint8_t MCP_ModifyRegister(uint8_t reg_addr, uint8_t mask, uint8_t value) { 
+
+  
+
     uint8_t buffer[4]; 
-    memset(buffer, 0, sizeof(buffer));  // Initialize buffer to 0 
+
+    memset(buffer, 0, sizeof(buffer)); // Initialize buffer to 0 
 
     buffer[0] = MODIFY_CMD; 
+
     buffer[1] = reg_addr; 
+
     buffer[2] = mask; 
+
     buffer[3] = value; 
-    XSpiPs_PolledTransfer(&SpiInstance, buffer, NULL, 4);  
+
+    int status = XSpiPs_PolledTransfer(&SpiInstance, buffer, NULL, 4); 
+
+    if (status != XST_SUCCESS) { 
+
+  
+
+    	return XST_FAILURE; 
+
+  
+
+     } 
+
+  
+
+    return status; 
+
+  
 
 } 
 
-void Configure_CAN_BitTiming() { //XSpiPs_PolledTransfer(&SpiInstance, &reset_cmd, NULL, 1);?? 
+  
+
+  
+
+uint8_t MCP_ReadRegister(uint8_t reg_addr) { 
+
+    uint8_t buffer[2]; 
+
+    uint8_t rx_buffer[4]; 
+
+    memset(buffer, 0, sizeof(buffer)); // Initialize buffers to 0 
+
+    memset(rx_buffer, 0, sizeof(rx_buffer)); 
+
+    buffer[0] = READ_CMD; 
+
+    buffer[1] = reg_addr; 
+
+    int status = XSpiPs_PolledTransfer(&SpiInstance, buffer, rx_buffer, 4); 
+
+    if (status != XST_SUCCESS) { 
+
+    	return XST_FAILURE; 
+
+     } 
+
+  
+
+    return rx_buffer[0]; // Read value is the first byte 
+
+  
+
+} 
+
+  
+
+  
+
+  
+
+void Configure_CAN_BitTiming() { 
 
     MCP_WriteRegister(CNF1, 0x41); // Set CNF1 for 250 kbps 
+
+  
+
     MCP_WriteRegister(CNF2, 0xFB); // Set CNF2 
-    MCP_WriteRegister(CNF3, 0x86); // Set CNF3  
 
-}   
+  
 
-void Setup_CAN_Filters() {  //XSpiPs_PolledTransfer(&SpiInstance, &reset_cmd, NULL, 1);?? 
+    MCP_WriteRegister(CNF3, 0x86); // Set CNF3 
 
-    for (uint8_t addr = 0x00; addr <= 0x5D; addr++) { 
+  
 
-        MCP_WriteRegister(addr, 0x00); // Clear all filters and buffers 
+} 
+
+  
+
+  
+
+void Setup_CAN_Filters() { 
+
+  
+
+    for (uint8_t addr = 0x00; addr <= 0x0B; addr++) { //Accept Filters enabled: 00 
+
+  
+
+              MCP_WriteRegister(addr, 0x00); 
+
+  
+
+          } 
+
+  
+
+    for (uint8_t addr = 0x10; addr <= 0x1B; addr++) { 
+
+  
+
+              MCP_WriteRegister(addr, 0x00); 
+
+  
+
+          } 
+
+  
+
+    for (uint8_t addr = 0x20; addr <= 0x27; addr++) {//Accept Masks enabled: 00 
+
+  
+
+              MCP_WriteRegister(addr, 0x00); 
+
+  
+
+          } 
+
+  
+
+    for (uint8_t addr = 0x30; addr <= 0x3D; addr++) { 
+
+  
+
+            MCP_WriteRegister(addr, 0x00); 
+
+  
+
+          } 
+
+  
+
+    for (uint8_t addr = 0x40; addr <= 0x4D; addr++) { 
+
+  
+
+              MCP_WriteRegister(addr, 0x00); 
+
+  
+
+          } 
+
+  
+
+    for (uint8_t addr = 0x50; addr <= 0x5D; addr++) { 
+
+  
+
+              MCP_WriteRegister(addr, 0x00); 
+
+  
+
+          } 
+
+  
+
+} 
+
+  
+
+  
+
+void Set_CAN_Mode(uint8_t mode) { 
+
+  
+
+	MCP_ModifyRegister(CANCTRL, 0x87, mode); 
+
+    uint8_t current_mode = MCP_ReadRegister(CANCTRL); 
+
+    if (current_mode == 0x00) { 
+
+        xil_printf("Successfully entered mode: 0x%02X\n", current_mode); 
+
+  
+
+    } else { 
+
+  
+
+        xil_printf("Failed to enter mode: 0x%02X. Current mode: 0x%02X\n", current_mode); 
+
+  
 
     } 
 
-    MCP_ModifyRegister(RXB0CTRL, 0x64, 0x60); // Accept any message type   
+  
 
 } 
 
+  
 
-int Set_CAN_Mode(uint8_t mode) { //XSpiPs_PolledTransfer(&SpiInstance, &reset_cmd, NULL, 1);??  
+// Set CAN to accept any message type 
 
-return MCP_ModifyRegister(CANCTRL, 0x80, mode); 
+  
+
+void Set_CAN_Accept_Any_Message(uint8_t scam) { 
+
+  // Configure RXB0CTRL to accept any message 
+
+  
+
+	MCP_ModifyRegister(RXB0CTRL, 0x60, scam); 
+
+  
+
+    uint8_t current_config = MCP_ReadRegister(RXB0CTRL); 
+
+       if (current_config == 0x60) { 
+
+  
+
+           xil_printf("Successfully entered config: 0x%02X\n", current_config); 
+
+  
+
+       } else { 
+
+           xil_printf("Failed to enter mode: 0x%02X. current_config: 0x%02X\n", current_config); 
+
+  
+
+       } 
+
+  
+
+    xil_printf("CAN mode set to accept any message type.\n"); 
+
+  
 
 } 
 
-int Transmit_CAN_Message(uint8_t *data, uint8_t length) { 
+  
 
-    MCP_WriteRegister(TXB0SIDH, 0x40); // Set standard ID high byte --doubtful 
-    MCP_WriteRegister(TXB0CTRL, 0x81); // Set TX control to standard ID  0x08 
+uint8_t Transmit_CAN_Message(uint8_t *tx_data, uint8_t length) { 
 
-    // Load data 
+  
 
-    for (uint8_t i = 0; i < length; i++) { 
+	// Step 1: Disable TX interrupt 
 
-        MCP_WriteRegister(TXB0DLC + i, data[i]); 
+  
+
+		    MCP_ModifyRegister(CANINTE, 0x04, 0x00); // Clear TXIE (disable interrupt) 
+
+  
+
+		    // Step 2: Load data into TXB0DLC 
+
+  
+
+		       MCP_WriteRegister(TXB0DLC, length); // Set DLC 
+
+  
+
+		       for (uint8_t i = 0; i < length; i++) { 
+
+  
+
+                 MCP_WriteRegister(TXB0D0 + i, tx_data[i]); // Write data bytes 
+
+  
+
+		           } 
+
+  
+
+		    // Step 3: Set TXREQ in TXB0CTRL 
+
+  
+
+		           MCP_ModifyRegister(TXB0CTRL, 0x08, 0x08); // Request transmission (set TXREQ) 
+
+  
+
+	    // Send RTS command to initiate transmission 
+
+  
+
+	    uint8_t rts_cmd = RTS_CMD_TXB0; 
+
+  
+
+	    return XSpiPs_PolledTransfer(&SpiInstance, &rts_cmd, NULL, 1); // Request to Send TXB0 
+
+  
+
+} 
+
+  
+
+  
+
+  
+
+uint8_t Receive_CAN_Message(uint16_t *can_id, uint8_t *length, uint8_t *data) { 
+
+  
+
+    uint8_t sidh = MCP_ReadRegister(RXB0SIDH); 
+
+  
+
+    uint8_t sidl = MCP_ReadRegister(RXB0SIDL); 
+
+  
+
+    *can_id = ((sidh << 3) | (sidl >> 5)) & 0x7FF; 
+
+  
+
+    xil_printf("Received CAN-ID: 0x%03X\n", *can_id); 
+
+  
+
+    *length = MCP_ReadRegister(RXB0DLC) & 0x0F; 
+
+  
+
+    xil_printf("DLC: %d\n", *length); 
+
+  
+
+    for (int i = 0; i < *length; i++) { 
+
+  
+
+        data[i] = MCP_ReadRegister(RXB0D0 + i); 
+
+  
+
     } 
 
-    MCP_WriteRegister(TXB0DLC, length); // Set data length code 
-    uint8_t rts_cmd = RTS_CMD_TXB0; 
+  
 
-    return XSpiPs_PolledTransfer(&SpiInstance, &rts_cmd, NULL, 1); // Request to Send 
+   return 1; 
 
-} 
-
-uint8_t Receive_CAN_Message(uint8_t *buffer) { 
-
-    uint8_t status = MCP_ReadRegister(CANINTF); 
-    if (status & 0x01) { // RX0IF is set 
-        for (uint8_t i = 0; i < 8; i++) { 
-
-            buffer[i] = MCP_ReadRegister(RXB0DLC + i); 
-
-        } 
-        MCP_WriteRegister(CANINTF, 0x01); // Clear RX0IF 
-        return 1; 
-
-    } 
-    return 0; // No message 
+  
 
 } 
 
- 
+  
+
+  
+
+/*uint8_t Read_CAN_status() { 
+
+  
+
+    uint8_t buffer[2]; 
+
+  
+
+    uint8_t status; 
+
+  
+
+    memset(buffer, 0, sizeof(buffer)); // Initialize buffer 
+
+  
+
+   memset(&status, 0, sizeof(status)); // Initialize status 
+
+  
+
+    buffer[0] = READ_STATUS; 
+
+  
+
+    XSpiPs_PolledTransfer(&SpiInstance, buffer, &status, 1); 
+
+  
+
+    return status; 
+
+
+}*/ 
