@@ -1,0 +1,150 @@
+#include <stdio.h>
+#include "xspips.h"
+#include "xparameters.h"
+#include "string.h"  // For memset
+#include "platform.h"
+#include "xgpiops.h"
+#include "xscugic.h"
+#include "xil_exception.h"
+
+// Define constants
+#define SPI_DEVICE_ID       XPAR_XSPIPS_0_DEVICE_ID
+#define INTC_DEVICE_ID      XPAR_SCUGIC_0_DEVICE_ID
+#define SPI_INTR_ID 		XPS_SPI0_INT_ID
+
+#define GPIO_DEVICE_ID      XPAR_PSU_GPIO_0_DEVICE_ID
+#define INTERRUPT_GPIO_PIN  78  // Pin connected to interrupt monitoring
+
+// SPI Instance
+XSpiPs SpiInstance;
+XGpioPs GpioInstance;
+XScuGic InterruptController;
+
+// Flag for interrupt occurrence
+int SpiIntrFlag = 0;
+
+// Interrupt Handler
+void SPI_InterruptHandler(void *CallbackRef) {
+
+    XSpiPs *SpiPtr = (XSpiPs *)CallbackRef;
+
+    // Acknowledge the interrupt
+    XSpiPs_InterruptHandler(&SpiInstance);
+
+    // Set interrupt flag
+    SpiIntrFlag = 1;
+
+    // Toggle GPIO pin to monitor on oscilloscope
+    static int toggle = 0;
+    XGpioPs_WritePin(&GpioInstance, INTERRUPT_GPIO_PIN, toggle);
+    toggle = !toggle;
+
+    xil_printf("SPI Interrupt Triggered!\n");
+}
+
+// Function to initialize SPI
+int InitSpi() {
+    XSpiPs_Config *SpiConfig;
+    int Status;
+
+    SpiConfig = XSpiPs_LookupConfig(SPI_DEVICE_ID);
+    if (!SpiConfig) return XST_FAILURE;
+
+    Status = XSpiPs_CfgInitialize(&SpiInstance, SpiConfig, SpiConfig->BaseAddress);
+    if (Status != XST_SUCCESS) return Status;
+    XSpiPs_SelfTest(&SpiInstance);
+
+    XSpiPs_SetOptions(&SpiInstance, XSPIPS_MASTER_OPTION | XSPIPS_FORCE_SSELECT_OPTION);
+    XSpiPs_SetClkPrescaler(&SpiInstance, XSPIPS_CLK_PRESCALE_64);
+    XSpiPs_Enable(&SpiInstance);
+    XSpiPs_SetSlaveSelect(&SpiInstance, 0);
+
+    return XST_SUCCESS;
+}
+
+// Function to initialize GPIO
+int InitGpio() {
+    XGpioPs_Config *GpioConfig;
+    int Status;
+
+    GpioConfig = XGpioPs_LookupConfig(GPIO_DEVICE_ID);
+    if (!GpioConfig) return XST_FAILURE;
+
+    Status = XGpioPs_CfgInitialize(&GpioInstance, GpioConfig, GpioConfig->BaseAddr);
+    if (Status != XST_SUCCESS) return Status;
+
+    XGpioPs_SetDirectionPin(&GpioInstance, INTERRUPT_GPIO_PIN, 1);  // Set as output
+    XGpioPs_SetOutputEnablePin(&GpioInstance, INTERRUPT_GPIO_PIN, 1);
+    XGpioPs_WritePin(&GpioInstance, INTERRUPT_GPIO_PIN, 0);  // Set low initially
+
+    return XST_SUCCESS;
+}
+
+// Function to initialize the interrupt controller
+int InitInterruptSystem() {
+    XScuGic_Config *IntcConfig;
+    int Status;
+
+    IntcConfig = XScuGic_LookupConfig(INTC_DEVICE_ID);
+    if (!IntcConfig) return XST_FAILURE;
+
+    Status = XScuGic_CfgInitialize(&InterruptController, IntcConfig, IntcConfig->CpuBaseAddress);
+    if (Status != XST_SUCCESS) return Status;
+
+    Xil_ExceptionRegisterHandler(XIL_EXCEPTION_ID_IRQ_INT,
+                                 (Xil_ExceptionHandler)XScuGic_InterruptHandler,
+                                 &InterruptController);
+
+    XScuGic_Connect(&InterruptController, SPI_INTR_ID,
+                    (Xil_ExceptionHandler)SPI_InterruptHandler, &SpiInstance);
+    XScuGic_Enable(&InterruptController, SPI_INTR_ID);
+    Xil_ExceptionEnable();
+
+    return XST_SUCCESS;
+}
+
+// Main function
+int main() {
+    int Status;
+    uint8_t TxBuffer[] = {0x44, 0x33, 0x22, 0x11};
+
+    init_platform();
+
+    Status = InitSpi();
+    if (Status != XST_SUCCESS) {
+        xil_printf("Failed to initialize SPI\n");
+        return XST_FAILURE;
+    }
+
+    Status = InitGpio();
+    if (Status != XST_SUCCESS) {
+        xil_printf("Failed to initialize GPIO\n");
+        return XST_FAILURE;
+    }
+
+    Status = InitInterruptSystem();
+    if (Status != XST_SUCCESS) {
+        xil_printf("Failed to initialize Interrupt System\n");
+        return XST_FAILURE;
+    }
+
+    // Enable SPI interrupt
+    XSpiPs_SetStatusHandler(&SpiInstance, &SpiInstance, SPI_InterruptHandler);
+    XSpiPs_InterruptHandler(&SpiInstance);
+
+    xil_printf("SPI Interrupt Test Initialized. Transmitting data...\n");
+
+    // Transmit data
+    while (1) {
+        if (SpiIntrFlag) {
+            SpiIntrFlag = 0;  // Clear interrupt flag
+            xil_printf("Data transmission completed!\n");
+        }
+
+        XSpiPs_PolledTransfer(&SpiInstance, TxBuffer, NULL, sizeof(TxBuffer));
+        for (volatile int i = 0; i < 1000000; i++);  // Delay for testing
+    }
+
+    cleanup_platform();
+    return 0;
+}
