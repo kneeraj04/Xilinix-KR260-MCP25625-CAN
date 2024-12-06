@@ -1,0 +1,413 @@
+#include <stdio.h>
+#include "xspips.h"
+#include "xparameters.h"
+#include "string.h"  // For memset
+#include "platform.h"
+#include "xgpiops.h"
+#include "xscugic.h"
+#include "xil_exception.h"
+
+// SPI Commands
+#define GPIO_DEVICE_ID  XPAR_PSU_GPIO_0_DEVICE_ID
+#define SPI_EMIO XPAR_XSPIPS_0_DEVICE_ID
+#define INTC_DEVICE_ID  XPAR_SCUGIC_SINGLE_DEVICE_ID
+#define SPI_INTR_ID XPS_SPI0_INT_ID // SPI0 ID?
+
+#define PIN_D20_RESET 78
+
+#define WRITE_CMD     0x02
+#define READ_CMD      0x03
+#define MODIFY_CMD    0x05
+#define RESET_CMD     0xC0
+#define RTS_CMD_TXB0  0x81
+
+// MCP25625 Register Addresses
+#define CANCTRL       0x0F
+#define CNF1          0x2A
+#define CNF2          0x29
+#define CNF3          0x28
+#define TXB0CTRL      0x30
+#define TXB0DLC       0x35
+#define TXB0D0        0x36
+#define CANINTE       0x2B
+#define RXB0CTRL      0x60
+#define CANINTF       0x2C
+#define RXB0D0        0x66
+#define RXB0D1        0x67
+#define RXB0D2        0x68
+#define RXB0D3        0x69
+#define RXB0DLC       0x65
+#define RXB0SIDH      0x61
+#define RXB0SIDL      0x62
+#define RXF0SIDH      0x00
+#define RXF0SIDL      0x01
+#define RXM0SIDH      0x20
+#define RXM0SIDL      0x21
+
+
+// SPI-GPIO Instances
+XGpioPs GpioPs;
+XSpiPs SpiInstance;
+XScuGic InterruptController;
+
+// Flags and status
+int SpiIntrFlag = 0;
+int status;
+
+// Function Prototypes
+void SetupInterruptSystem(XScuGic *InterruptController, XSpiPs *SpiInstance, u16 Spi0IntrId);
+void SPI_InterruptHandler(void *CallBackRef);
+uint8_t MCP_Reset();
+void Configure_CAN_BitTiming();
+void Setup_CAN_Filters();
+void Set_CAN_Accept_Any_Message(uint8_t scam);
+void Set_CAN_Mode(uint8_t mode);
+uint8_t MCP_WriteRegister(uint8_t reg_addr, uint8_t value);
+uint8_t MCP_ModifyRegister(uint8_t reg_addr, uint8_t mask, uint8_t value);
+uint8_t MCP_ReadRegister(uint8_t reg_addr);
+uint8_t Receive_CAN_Message(uint16_t *can_id, uint8_t *length, uint8_t *data);
+uint8_t Transmit_CAN_Message(uint8_t *data, uint8_t length);
+void Configure_CAN_Interrupts();
+
+int main() {
+    XSpiPs_Config *SpiConfig;
+    XGpioPs_Config *ConfigPtr;
+
+    // Initialize the platform
+    init_platform();
+
+    // Initialize GPIO for Reset Pin
+    ConfigPtr = XGpioPs_LookupConfig(GPIO_DEVICE_ID);
+    XGpioPs_CfgInitialize(&GpioPs, ConfigPtr, ConfigPtr->BaseAddr);
+    XGpioPs_SetDirectionPin(&GpioPs, PIN_D20_RESET, 1);
+
+    // Initialize SPI Interface
+    SpiConfig = XSpiPs_LookupConfig((u16)SPI_EMIO);
+    XSpiPs_CfgInitialize(&SpiInstance, SpiConfig, SpiConfig->BaseAddress);
+    XSpiPs_SelfTest(&SpiInstance);
+    XSpiPs_SetOptions(&SpiInstance, XSPIPS_MASTER_OPTION | XSPIPS_FORCE_SSELECT_OPTION);
+    XSpiPs_SetClkPrescaler(&SpiInstance, XSPIPS_CLK_PRESCALE_256);
+    XSpiPs_Enable(&SpiInstance);
+    XSpiPs_SetSlaveSelect(&SpiInstance, 0);
+
+    // Setup Interrupt System
+    SetupInterruptSystem(&InterruptController, &SpiInstance, SPI_INTR_ID);
+
+    // Reset MCP25625
+    MCP_Reset();
+
+    // Configure CAN Bit Timing for 250 kbps
+    Configure_CAN_BitTiming();
+
+    // Setup Filters and Clear Buffers
+    Setup_CAN_Filters();
+
+    // Set CAN to accept any message type
+    Set_CAN_Accept_Any_Message(0x00);
+
+    Configure_CAN_Interrupts();
+
+    // Set MCP25625 to Normal Mode
+    Set_CAN_Mode(0x00);
+
+    xil_printf("MCP25625 Initialized. Waiting for messages...\n");
+
+    // Transmit Example Message
+    uint8_t tx_data[] = {0x44, 0x33, 0x22, 0x11}; // Example message
+    Transmit_CAN_Message(tx_data, sizeof(tx_data));
+
+    while (1) {
+
+        if (SpiIntrFlag) {
+            SpiIntrFlag = 0; // Clear interrupt flag
+            uint8_t interrupt_flags = MCP_ReadRegister(CANINTF);
+
+            if (interrupt_flags & 0x01) { // RX0IF: Message Received
+                uint16_t can_id = 0;
+                uint8_t length = 0;
+                uint8_t data[8] = {0};
+                Receive_CAN_Message(&can_id, &length, data);
+                MCP_ModifyRegister(CANINTF, 0x01, 0x00); // Clear RX0IF
+            }
+
+            if (interrupt_flags & 0x04) { // TX0IF: Transmission Completed
+                MCP_ModifyRegister(CANINTF, 0x04, 0x00); // Clear TX0IF
+            }
+        }
+    }
+
+    cleanup_platform();
+    return 0;
+}
+// Function Definitions
+
+uint8_t MCP_Reset() {
+
+    for (int delay = 0; delay < 100; delay++);
+
+    XGpioPs_WritePin(&GpioPs, PIN_D20_RESET, 0); // Set Reset High
+
+    xil_printf("Setting Reset LOW\n");
+
+    for (int delay = 0; delay < 100; delay++);
+
+    XGpioPs_WritePin(&GpioPs, PIN_D20_RESET, 1); // Set Reset Low
+
+    xil_printf("Setting Reset HIGH\n");
+
+    for (int delay = 0; delay < 100; delay++);
+
+    return 1;
+
+}
+
+
+uint8_t MCP_WriteRegister(uint8_t reg_addr, uint8_t value) {
+
+	uint8_t buffer[3];
+
+    memset(buffer, 0, sizeof(buffer)); // Initialize buffer to 0
+
+    buffer[0] = WRITE_CMD;
+
+    buffer[1] = reg_addr;
+
+    buffer[2] = value;
+
+    return XSpiPs_Transfer(&SpiInstance, buffer, NULL, 3);
+
+}
+
+
+uint8_t MCP_ModifyRegister(uint8_t reg_addr, uint8_t mask, uint8_t value) {
+
+    uint8_t buffer[4];
+
+    memset(buffer, 0, sizeof(buffer)); // Initialize buffer to 0
+
+    buffer[0] = MODIFY_CMD;
+
+    buffer[1] = reg_addr;
+
+    buffer[2] = mask;
+
+    buffer[3] = value;
+
+    int status = XSpiPs_Transfer(&SpiInstance, buffer, NULL, 4);
+
+    if (status != XST_SUCCESS) {
+
+    	return XST_FAILURE;
+
+     }
+
+    return status;
+
+}
+
+uint8_t MCP_ReadRegister(uint8_t reg_addr) {
+
+    uint8_t buffer[2];
+
+    uint8_t rx_buffer[2];
+
+    memset(buffer, 0, sizeof(buffer)); // Initialize buffers to 0
+
+    memset(rx_buffer, 0, sizeof(rx_buffer));
+
+    buffer[0] = READ_CMD;
+
+    buffer[1] = reg_addr;
+
+    int status = XSpiPs_Transfer(&SpiInstance, buffer, rx_buffer, 2);
+
+    if (status != XST_SUCCESS) {
+
+    	return XST_FAILURE;
+
+     }
+
+    return rx_buffer[0]; // Read value is the Second byte
+
+}
+
+
+void Configure_CAN_BitTiming() {
+
+    MCP_WriteRegister(CNF1, 0x41); // Set CNF1 for 250 kbps
+    MCP_WriteRegister(CNF2, 0xFB); // Set CNF2
+    MCP_WriteRegister(CNF3, 0x86); // Set CNF3
+
+}
+
+void Setup_CAN_Filters() {
+
+    for (uint8_t addr = 0x00; addr <= 0x0B; addr++) { //Accept Filters enabled: 00
+
+              MCP_WriteRegister(addr, 0x00);
+          }
+
+    for (uint8_t addr = 0x10; addr <= 0x1B; addr++) {
+
+              MCP_WriteRegister(addr, 0x00);
+          }
+
+    for (uint8_t addr = 0x20; addr <= 0x27; addr++) {//Accept Masks enabled: 00
+
+              MCP_WriteRegister(addr, 0x00);
+          }
+
+    for (uint8_t addr = 0x30; addr <= 0x3D; addr++) {
+
+            MCP_WriteRegister(addr, 0x00);
+
+          }
+
+    for (uint8_t addr = 0x40; addr <= 0x4D; addr++) {
+
+              MCP_WriteRegister(addr, 0x00);
+
+          }
+
+    for (uint8_t addr = 0x50; addr <= 0x5D; addr++) {
+
+              MCP_WriteRegister(addr, 0x00);
+          }
+}
+
+void Set_CAN_Mode(uint8_t mode) {
+
+	MCP_ModifyRegister(CANCTRL, 0xFF, mode);
+    uint8_t current_mode = MCP_ReadRegister(CANCTRL);
+
+    if (current_mode == 0x00) {
+
+        xil_printf("Successfully entered mode: 0x%02X\n", current_mode);
+
+
+    } else {
+
+        xil_printf("Failed to enter mode: 0x%02X. Current mode: 0x%02X\n", current_mode);
+
+    }
+
+}
+
+// Set CAN to accept any message type
+
+void Set_CAN_Accept_Any_Message(uint8_t scam) {
+
+  // Configure RXB0CTRL to accept any message
+
+	MCP_ModifyRegister(RXB0CTRL, 0xFF, scam);
+    uint8_t current_config = MCP_ReadRegister(RXB0CTRL);
+
+       if (current_config == 0x60) {
+          xil_printf("Successfully entered config: 0x%02X\n", current_config);
+       } else {
+           xil_printf("Failed to enter mode: 0x%02X. current_config: 0x%02X\n", current_config);
+       }
+
+    xil_printf("CAN mode set to accept any message type.\n");
+
+}
+
+void Configure_CAN_Interrupts() {
+
+    // Step : Enable TX0IE, RX0IE & TX0IF,RX0IF interrupt
+    	status = MCP_ModifyRegister(CANINTE, 0xFF, 0x85);
+    	 if (status == 0x85) {
+    	          xil_printf("Successfully entered config: 0x%02X\n", status);
+    	       } else {
+    	           xil_printf("Failed to enter mode: 0x%02X. current_config: 0x%02X\n", status);
+    	       }
+    	MCP_ModifyRegister(CANINTF, 0xFF, 0x85);
+    	 if (status == 0x85) {
+    	          xil_printf("Successfully entered config: 0x%02X\n", status);
+    	       } else {
+    	           xil_printf("Failed to enter mode: 0x%02X. current_config: 0x%02X\n", status);
+    	       }
+}
+
+uint8_t Transmit_CAN_Message(uint8_t *tx_data, uint8_t length) {
+
+
+    // Step 1: Load data into TXB0DLC
+
+		       MCP_WriteRegister(TXB0DLC, length); // Set DLC
+
+
+		       for (uint8_t i = 0; i < length; i++) {
+
+                 MCP_WriteRegister(TXB0D0 + i, tx_data[i]); // Write data bytes
+
+		           }
+
+		    // Step 3: Set TXREQ in TXB0CTRL (config)
+
+		           MCP_ModifyRegister(TXB0CTRL, 0xFF, 0x18); // Request transmission (set TXREQ)
+
+	    // Send RTS command to initiate transmission
+
+	    uint8_t rts_cmd = RTS_CMD_TXB0;
+
+    return XSpiPs_Transfer(&SpiInstance, &rts_cmd, NULL, 1); // Request to Send TXB0
+
+}
+
+
+uint8_t Receive_CAN_Message(uint16_t *can_id, uint8_t *length, uint8_t *data) {
+
+    uint8_t sidh = MCP_ReadRegister(RXB0SIDH);
+
+    uint8_t sidl = MCP_ReadRegister(RXB0SIDL);
+
+    *can_id = ((sidh << 3) | (sidl >> 5)) & 0x7FF;
+
+    xil_printf("Received CAN-ID: 0x%03X\n", *can_id);
+
+    *length = MCP_ReadRegister(RXB0DLC) & 0x0F;
+
+    xil_printf("DLC: %d\n", *length);
+
+    for (int i = 0; i < *length; i++) {
+        data[i] = MCP_ReadRegister(RXB0D0 + i);
+    }
+
+   return 1;
+
+}
+
+void SetupInterruptSystem(XScuGic *InterruptController, XSpiPs *SpiInstance, u16 Spi0IntrId) {
+    XScuGic_Config *IntcConfig;
+
+    Xil_ExceptionInit();
+
+    // Initialize Interrupt Controller
+    IntcConfig = XScuGic_LookupConfig(INTC_DEVICE_ID);
+    status = XScuGic_CfgInitialize(InterruptController, IntcConfig, IntcConfig->CpuBaseAddress);
+    if (status != XST_SUCCESS) {
+        xil_printf("Interrupt Controller Initialization Failed\n");
+        return;
+    }
+
+    // Connect SPI interrupt handler
+    status = XScuGic_Connect(InterruptController, Spi0IntrId, (Xil_ExceptionHandler)SPI_InterruptHandler, SpiInstance);
+    if (status != XST_SUCCESS) {
+        xil_printf("Failed to connect SPI interrupt\n");
+        return;
+    }
+
+    // Enable SPI Interrupt
+    XScuGic_Enable(InterruptController, Spi0IntrId);
+
+    // Enable interrupts globally
+    Xil_ExceptionEnableMask(XIL_EXCEPTION_IRQ);
+
+    xil_printf("Interrupt system configured.\n");
+}
+
+void SPI_InterruptHandler(void *CallBackRef) {
+    SpiIntrFlag = 1; // Set the interrupt flag
+    xil_printf("SPI Interrupt triggered!\n");
+}
