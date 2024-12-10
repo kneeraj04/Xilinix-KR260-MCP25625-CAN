@@ -1,3 +1,4 @@
+
 #include <stdio.h>
 #include "xspips.h"
 #include "xparameters.h"
@@ -9,10 +10,15 @@
 #include "xparameters_ps.h"
 
 // SPI Commands
+
 #define GPIO_DEVICE_ID  XPAR_PSU_GPIO_0_DEVICE_ID
+
 #define SPI_EMIO XPAR_XSPIPS_0_DEVICE_ID
+
 #define INTC_DEVICE_ID  XPAR_SCUGIC_SINGLE_DEVICE_ID //VERIFIED
+
 #define SPI_INTR_ID XPAR_XSPIPS_0_INTR //VERIFIED
+
 
 #define PIN_D20_RESET 78
 
@@ -32,25 +38,26 @@
 #define TXB0DLC       0x35
 #define TXB0D0        0x36
 #define CANINTE       0x2B
-#define CANINTF       0x2C
 
 // SPI Instance
+
 XGpioPs GpioPs;
 XSpiPs SpiInstance;
 XScuGic InterruptController;
-
 // Function Prototypes
 
 int status;
+
 int TransferInProgress;
 
 int SetupInterruptSystem(XScuGic *InterruptController, XSpiPs *SpiInstance, u16 Spi0IntrId);
-void IntrHandler(void *CallBackRef, u32 StatusEvent, unsigned int ByteCount);
-void SpiPsDisableIntrSystem(XScuGic *InterruptController, u16 Spi0IntrId);
 
+void IntrHandler(void *CallBackRef, u32 StatusEvent, unsigned int ByteCount);
+// Function Prototypes
 uint8_t MCP_Reset();
 void Configure_CAN_BitTiming();
 void Setup_CAN_Filters();
+
 void Set_CAN_Mode(uint8_t mode);
 
 uint8_t Transmit_CAN_Message(uint8_t *data, uint8_t length);
@@ -63,7 +70,6 @@ int main() {
     XSpiPs_Config *SpiConfig;
     XGpioPs_Config *ConfigPtr;
 
-
     // Initialize the SPI interface
     init_platform();
 
@@ -75,52 +81,63 @@ int main() {
     SpiConfig = XSpiPs_LookupConfig((u16)SPI_EMIO);
     XSpiPs_CfgInitialize(&SpiInstance, SpiConfig, SpiConfig->BaseAddress);
     XSpiPs_SelfTest(&SpiInstance);
-
-    //Develop ISR
-    // Setup Interrupt System
     SetupInterruptSystem(&InterruptController, &SpiInstance, SPI_INTR_ID);
-    /*
-    	 * Setup the handler for the SPI that will be called from the
-    	 * interrupt context when an SPI status occurs, specify a pointer to
-    	 * the SPI driver instance as the callback reference so the handler is
-    	 * able to access the instance data
-    	 */
-    XSpiPs_SetStatusHandler(&SpiInstance, &SpiInstance, (XSpiPs_StatusHandler)IntrHandler); //Doubt
 
-    XSpiPs_SetOptions(&SpiInstance, XSPIPS_MASTER_OPTION | XSPIPS_FORCE_SSELECT_OPTION);
-    XSpiPs_SetClkPrescaler(&SpiInstance, XSPIPS_CLK_PRESCALE_8);
+      /*
 
-    XSpiPs_Enable(&SpiInstance);
-    XSpiPs_SetSlaveSelect(&SpiInstance, 0);
+      	 * Setup the handler for the SPI that will be called from the
 
-     // Reset MCP25625
+      	 * interrupt context when an SPI status occurs, specify a pointer to
 
-     MCP_Reset();
+      	 * the SPI driver instance as the callback reference so the handler is
 
+      	 * able to access the instance data
+
+      	 */
+
+
+     //XSpiPs_InterruptHandler(&SpiInstance);
+
+
+     XSpiPs_SetStatusHandler(&SpiInstance, &SpiInstance, (XSpiPs_StatusHandler)IntrHandler); //Doubt
+     XSpiPs_SetOptions(&SpiInstance,XSPIPS_MASTER_OPTION | XSPIPS_FORCE_SSELECT_OPTION);
+     XSpiPs_SetClkPrescaler(&SpiInstance, XSPIPS_CLK_PRESCALE_256);
+
+      XSpiPs_Enable(&SpiInstance);
+      XSpiPs_SetSlaveSelect(&SpiInstance, 0);
+
+        // Reset MCP25625
+
+       MCP_Reset();
+
+       int8_t current_mode = MCP_ReadRegister(CANSTAT);
+
+           if (current_mode == 0x00) {
+               xil_printf("Successfully entered mode: 0x%02X\n", current_mode);
+           } else {
+               xil_printf("Failed to enter mode: 0x%02X. Current mode: 0x%02X\n", current_mode);
+           }
        // Configure CAN Bit Timing for 250 kbps
-     Configure_CAN_BitTiming();
+       Configure_CAN_BitTiming();
 
        // Setup Filters and Clear Buffers
-     Setup_CAN_Filters();
+       Setup_CAN_Filters();
 
-       // Set MCP25625 to Normal Mode & INT flag code bit
-     Set_CAN_Mode(0x06);
+       // Set MCP25625 to Normal Mode
+       Set_CAN_Mode(0x06);
 
     // Transmit Example CAN Message
 
     uint8_t tx_data[] = {0x11, 0x22, 0x33, 0x44}; // Example message
 
-    TransferInProgress = TRUE;
-
-   while (TransferInProgress) {
+    while (1) {
 
     	Transmit_CAN_Message(tx_data, sizeof(tx_data));
 
         for (int delay = 0; delay < 10000000; delay++); // Simple delay
     }
-   // Clean-up before exit
-   SpiPsDisableIntrSystem(&InterruptController, SPI_INTR_ID);
-   return 0;
+
+    return 0;
 }
 
 // Function Definitions
@@ -128,11 +145,13 @@ int main() {
 uint8_t MCP_Reset() {
 
 	XGpioPs_WritePin(&GpioPs, PIN_D20_RESET,0);  // Set Reset high
+
 	xil_printf("Setting Reset HIGH\n");
 
 	 for (int delay = 0; delay < 100; delay++);
 
 	 XGpioPs_WritePin(&GpioPs,PIN_D20_RESET,1);              // Set Reset low
+
 	 xil_printf("Setting Reset LOW\n");
 
 	 for( int delay = 0; delay < 100; delay++);//wait
@@ -148,9 +167,9 @@ uint8_t MCP_WriteRegister(uint8_t reg_addr, uint8_t value) {
     buffer[2] = value;
     status = XSpiPs_Transfer(&SpiInstance, buffer, NULL, 3);
     if (status != XST_SUCCESS) {
-    	return XST_FAILURE;
-    }
-    return status;
+            return XST_FAILURE;
+      	}
+       return status;
 }
 
 uint8_t MCP_ModifyRegister(uint8_t reg_addr, uint8_t mask, uint8_t value) {
@@ -163,8 +182,9 @@ uint8_t MCP_ModifyRegister(uint8_t reg_addr, uint8_t mask, uint8_t value) {
     buffer[2] = mask;
     buffer[3] = value;
     int status = XSpiPs_Transfer(&SpiInstance, buffer, NULL, 4);
-    if (status != XST_SUCCESS) {
+    xil_printf("Sent: 0x%02X 0x%02X 0x%02X 0x%02X\n", MODIFY_CMD, reg_addr, mask, value);
 
+    if (status != XST_SUCCESS) {
             		return XST_FAILURE;
             	}
     return status;
@@ -227,8 +247,11 @@ void Setup_CAN_Filters() {
     for (uint8_t addr = 0x50; addr <= 0x5D; addr++) {
 
               MCP_WriteRegister(addr, 0x00);
+
           }
+
 }
+
 
 void Set_CAN_Mode(uint8_t mode) {
 
@@ -236,30 +259,19 @@ void Set_CAN_Mode(uint8_t mode) {
 
     uint8_t current_mode = MCP_ReadRegister(CANSTAT);
 
-    if (current_mode == 0x06) {
+    if (current_mode == 0x00) {
         xil_printf("Successfully entered mode: 0x%02X\n", current_mode);
     } else {
         xil_printf("Failed to enter mode: 0x%02X. Current mode: 0x%02X\n", current_mode);
     }
 
+
 }
 
 uint8_t Transmit_CAN_Message(uint8_t *tx_data, uint8_t length) {
 
-	// Step 1: Enable TX interrupt
-	    status = MCP_ModifyRegister(CANINTE, 0xFF, 0x04); // Set MERRF, TXIE
-
-	    if (status == 0x04) {
-	            xil_printf("Successfully entered mode: 0x%02X\n", status);
-	        } else {
-	            xil_printf("Failed to enter mode: 0x%02X. Current mode: 0x%02X\n", status);
-	        }
-	    status = MCP_ModifyRegister(CANINTF, 0xFF, 0x84); // Set MERRF, TXIF
-	    if (status == 0x04) {
-	            xil_printf("Successfully entered mode: 0x%02X\n", status);
-	        } else {
-	            xil_printf("Failed to enter mode: 0x%02X. Current mode: 0x%02X\n", status);
-	        }
+	// Step 1: Disable TX interrupt
+	    MCP_ModifyRegister(CANINTE, 0x04, 0x00); // Clear TXIE (disable interrupt)
 
 	    // Step 2: Load data into TXB0Dn
 	       MCP_WriteRegister(TXB0DLC, length); // Set DLC
@@ -278,79 +290,96 @@ uint8_t Transmit_CAN_Message(uint8_t *tx_data, uint8_t length) {
     return XSpiPs_Transfer(&SpiInstance, &rts_cmd, NULL, 1); // Request to Send TXB0
 
 }
-
 //Intialize interrupt controller and connect SPI Interrupt to GIC.
+
+
 
 int SetupInterruptSystem(XScuGic *InterruptController, XSpiPs *SpiInstance, u16 Spi0IntrId) {
 
-    XScuGic_Config *IntcConfig;
 
+    XScuGic_Config *IntcConfig;
     Xil_ExceptionInit();
 
     // Initialize Interrupt Controller
+
     IntcConfig = XScuGic_LookupConfig(INTC_DEVICE_ID);
+
     int status = XScuGic_CfgInitialize(InterruptController, IntcConfig, IntcConfig->CpuBaseAddress);
+
     if (status != XST_SUCCESS) {
+
         xil_printf("Interrupt Controller Initialization Failed\n");
+
         return XST_FAILURE;
+
     }
+
     		/*
+
     		 * Connect the interrupt controller interrupt handler to the hardware
+
     		 * interrupt handling logic in the processor.
+
     		 */
+
     Xil_ExceptionRegisterHandler(XIL_EXCEPTION_ID_INT,
+
     					(Xil_ExceptionHandler)XScuGic_InterruptHandler,
+
 						InterruptController);
+
     		/*
+
     		 * Connect the device driver handler that will be called when an
+
     		 * interrupt for the device occurs, the handler defined above performs
+
     		 * the specific interrupt processing for the device.
+
     		 */
+
     status = XScuGic_Connect(InterruptController, Spi0IntrId,
+
         (Xil_ExceptionHandler)XSpiPs_InterruptHandler, (void *)SpiInstance);
+
     if (status != XST_SUCCESS) {
+
         xil_printf("Failed to connect SPI interrupt. Status: %d\n", status);
+
         return XST_FAILURE;
+
     }
 
 
     // Enable SPI Interrupt
+
     XScuGic_Enable(InterruptController, Spi0IntrId);
 
+
     // Enable interrupts in processor
-    Xil_ExceptionEnable();
+
+    Xil_ExceptionEnableMask(XIL_EXCEPTION_IRQ);
+
 
     xil_printf("Interrupt system configured.\n");
 
     return XST_SUCCESS;
+
 }
 
-void IntrHandler(void *CallBackRef, u32 StatusEvent, unsigned int ByteCount) {
-    /*
-     * Indicate the transfer on the SPI bus is no longer in progress
-     * regardless of the status event
-     */
+void IntrHandler(void *CallBackRef, u32 StatusEvent, unsigned int ByteCount) { //Doubt
+
+
+    // Indicate the transfer on the SPI bus is no longer in progress
+
     TransferInProgress = FALSE;
 
-    /*
-     * If the event was not transfer done, then track it as an error
-     */
-    if (StatusEvent != XST_SPI_TRANSFER_DONE) {
-        xil_printf("SPI Transfer Error: StatusEvent=%d\n", StatusEvent);
-    } else {
+    // Check if the SPI transfer was completed successfully
+
+    if (StatusEvent == XST_SPI_TRANSFER_DONE) {
+
         xil_printf("SPI Transfer Completed. Bytes Transferred: %d\n", ByteCount);
+
     }
-}
 
-void SpiPsDisableIntrSystem(XScuGic *InterruptController, u16 Spi0IntrId)
-{
-	/*
-	 * Disable the interrupt for the SPI device.
-	 */
-	XScuGic_Disable(InterruptController, Spi0IntrId);
-
-	/*
-	 * Disconnect and disable the interrupt for the Spi device.
-	 */
-	XScuGic_Disconnect(InterruptController, Spi0IntrId);
 }
